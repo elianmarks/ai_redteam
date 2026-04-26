@@ -1,0 +1,18 @@
+orchestrator:
+  default_attacker: "gemini"      # claude | gemini
+  
+  claude:
+    model: "claude-opus-4-5"
+    max_tokens: 2048
+    api_key_env: "ANTHROPIC_API_KEY"
+  
+  gemini:
+    model: "gemini-3.1-flash-lite-preview"
+    max_tokens: 2048
+    api_key_env: "GEMINI_API_KEY"
+
+logging:
+  level: "INFO"                   # DEBUG | INFO | WARNING
+  save_raw_responses: true
+  results_dir: "./results"
+  logs_dir: "./logs"

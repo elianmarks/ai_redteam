@@ -1,0 +1,10 @@
+anthropic>=0.30.0
+httpx[http2]>=0.27.0
+pyyaml>=6.0.1
+playwright>=1.44.0
+# Após instalar playwright: playwright install chromium
+
+# Opcional — LLM atacante Gemini (nova SDK)
+# pip install google-genai>=0.8.0
+# Ou SDK antiga (deprecated, ainda funciona):
+# pip install google-generativeai

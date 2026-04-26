@@ -1,0 +1,40 @@
+# ============================================================
+# AI Red Team — .gitignore
+# ============================================================
+
+# Target configurations (contain sensitive intel, credentials, cookies)
+# Template is included; real targets are not
+config/targets/*.yaml
+!config/targets/template_target.yaml
+
+# Session results and reports (may contain leaked data)
+results/
+
+# Logs (may contain sensitive response data)
+logs/
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temp files (proxy config)
+/tmp*.yaml
