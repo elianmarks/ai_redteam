@@ -1,5 +1,5 @@
 orchestrator:
-  default_attacker: "gemini"      # claude | gemini
+  default_attacker: "ollama"      # claude | gemini | ollama
   
   claude:
     model: "claude-opus-4-5"
@@ -10,6 +10,12 @@ orchestrator:
     model: "gemini-3.1-flash-lite-preview"
     max_tokens: 2048
     api_key_env: "GEMINI_API_KEY"
+
+  ollama:
+    model: "redteam-ai"            # Criado com tools/create_local_model.py
+    url: "http://localhost:11434"   # URL do servidor Ollama
+    max_tokens: 4096
+    timeout: 300                    # Timeout em segundos (modelos locais são lentos)
 
 logging:
   level: "INFO"                   # DEBUG | INFO | WARNING

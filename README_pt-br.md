@@ -36,7 +36,8 @@ ai-redteam/
 │   └── payloads/                      ← Biblioteca de payloads AIX (285 total)
 ├── tools/
 │   ├── test_connection.py             ← Validador de conexão (YAML-driven)
-│   └── burp_to_yaml.py               ← Gera YAML de alvo a partir de export Burp Suite
+│   ├── burp_to_yaml.py               ← Gera YAML de alvo a partir de export Burp Suite
+│   └── create_local_model.py         ← Cria modelo Ollama para Red Team offline
 ├── cookies/                           ← Armazenamento persistente de cookies (--save-cookies)
 ├── logs/                              ← Logs de comunicação com LLM auxiliar
 └── results/                           ← Dados de sessão, relatórios, checkpoints
@@ -50,9 +51,16 @@ ai-redteam/
 pip install -r requirements.txt
 playwright install chromium
 
-# Chave de API do LLM auxiliar (uma das duas)
+# LLM auxiliar — escolha UM:
+
+# Opção 1: Gemini (free tier disponível)
 export GEMINI_API_KEY="..."
+
+# Opção 2: Claude
 export ANTHROPIC_API_KEY="sk-ant-..."
+
+# Opção 3: Ollama (100% local, sem API key)
+# Veja seção "Modelo Local (Ollama)" abaixo
 ```
 
 ---
@@ -183,6 +191,35 @@ Log completo de prompts/respostas em `logs/{provider}_{session_id}.log` com time
 
 No modo automático: escala automaticamente (none → light em 4 recusas → aggressive em 8).
 Nos modos interativos: selecionáveis individualmente via menu.
+
+---
+
+## Modelo Local (Ollama) — Offline, Sem API Keys
+
+Execute o LLM auxiliar 100% localmente via Ollama. Sem API keys, sem cloud, sem rate limits.
+
+```bash
+# 1. Instalar Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# 2. Baixar modelo base
+ollama pull qwen3:8b
+# OU: ollama pull huihui_ai/qwen3.5-abliterated:9b  (recomendado, sem guardrails)
+
+# 3. Criar modelo Red Team
+python tools/create_local_model.py
+# OU: python tools/create_local_model.py --base-model huihui_ai/qwen3.5-abliterated:9b
+
+# 4. Iniciar servidor Ollama
+ollama serve
+
+# 5. Editar config/orchestrator.yaml → default_attacker: "ollama"
+
+# 6. Executar normalmente
+python orchestrator.py --target-file meu_alvo.yaml
+```
+
+Modelos base recomendados: `qwen3:4b` (4GB RAM), `qwen3:8b` (8GB), `huihui_ai/qwen3.5-abliterated:9b` (8GB, sem guardrails — recomendado), `qwen3:14b` (16GB).
 
 ---
 

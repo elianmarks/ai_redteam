@@ -36,7 +36,8 @@ ai-redteam/
 │   └── payloads/                      ← AIX payload library (285 total)
 ├── tools/
 │   ├── test_connection.py             ← Connection validator (YAML-driven)
-│   └── burp_to_yaml.py               ← Generates target YAML from Burp Suite export
+│   ├── burp_to_yaml.py               ← Generates target YAML from Burp Suite export
+│   └── create_local_model.py         ← Builds Ollama model for offline Red Team
 ├── cookies/                           ← Persistent cookie storage (--save-cookies)
 ├── logs/                              ← LLM auxiliary communication logs
 └── results/                           ← Session data, reports, checkpoints
@@ -50,20 +51,30 @@ ai-redteam/
 pip install -r requirements.txt
 playwright install chromium
 
-# Auxiliary LLM API key (one of these)
+# Auxiliary LLM — choose ONE:
+
+# Option 1: Gemini (free tier available)
 export GEMINI_API_KEY="..."
+
+# Option 2: Claude
 export ANTHROPIC_API_KEY="sk-ant-..."
+
+# Option 3: Ollama (100% local, no API key needed)
+# See "Local Model (Ollama)" section below
 ```
 
 Edit `config/orchestrator.yaml` to choose the auxiliary LLM:
 
 ```yaml
 orchestrator:
-  default_attacker: "gemini"   # gemini | claude
+  default_attacker: "gemini"   # gemini | claude | ollama
   gemini:
     model: "gemini-3.1-flash-lite-preview"
   claude:
     model: "claude-opus-4-5"
+  ollama:
+    model: "redteam-ai"
+    url: "http://localhost:11434"
 ```
 
 ---
@@ -203,6 +214,62 @@ In interactive modes: individually selectable via menu.
 |---|---|---|
 | `analyzer.py` | Regex + YAML target-specific patterns | Fast, no API cost |
 | `llm_evaluator.py` | LLM judge via API | Semantic analysis, distinguishes real leaks from fabricated data |
+
+---
+
+## Local Model (Ollama) — Offline, No API Keys
+
+Run the auxiliary LLM 100% locally using Ollama. No API keys, no cloud, no rate limits.
+
+### Quick Setup
+
+```bash
+# 1. Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# 2. Pull a base model (choose by RAM)
+ollama pull qwen3:8b                              # 8GB RAM
+# OR: ollama pull huihui_ai/qwen3.5-abliterated:9b  # 8GB, no guardrails (recommended)
+# OR: ollama pull qwen3:4b                           # 4GB RAM (lighter)
+
+# 3. Build the Red Team model
+python tools/create_local_model.py
+# OR with custom base:
+python tools/create_local_model.py --base-model huihui_ai/qwen3.5-abliterated:9b
+
+# 4. Start Ollama server
+ollama serve
+
+# 5. Edit config/orchestrator.yaml → set default_attacker: "ollama"
+
+# 6. Run normally
+python orchestrator.py --target-file my_target.yaml --focus-owasp LLM01
+```
+
+### `create_local_model.py` Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `--base-model` | `qwen3:8b` | Base model from Ollama |
+| `--model-name` | `redteam-ai` | Name for the created model |
+| `--context-size` | `16384` | Context window in tokens |
+| `--temperature` | `0.8` | Higher = more creative prompts |
+| `--top-k` | `20` | Top-k sampling |
+| `--top-p` | `0.9` | Nucleus sampling |
+| `--dry-run` | — | Generate Modelfile without building |
+| `--output-modelfile` | — | Save Modelfile to custom path |
+
+### Recommended Base Models
+
+| RAM | Model | Notes |
+|---|---|---|
+| 4GB | `qwen3:4b`, `llama3.2:3b` | Basic capability |
+| 8GB | `qwen3:8b`, `llama3.1:8b` | Good balance |
+| 8GB | `huihui_ai/qwen3.5-abliterated:9b` | **Recommended** — no guardrails |
+| 16GB | `qwen3:14b`, `deepseek-r1:14b` | Best quality |
+| 32GB+ | `qwen3:32b` | Maximum capability |
+
+> **Abliterated models** have safety guardrails removed, which is important for Red Team work where the auxiliary LLM needs to generate attack prompts without self-censoring.
 
 ---
 

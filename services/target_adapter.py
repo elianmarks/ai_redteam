@@ -259,8 +259,9 @@ class TargetAdapter:
         self.turn_count += 1
         now = datetime.datetime.now().strftime("%-m/%-d/%Y, %I:%M:%S %p")
 
-        # Campos fixos do payload (payload.config_fields no YAML)
-        payload = dict(self.payload_cfg.get("config_fields", {}))
+        # Campos fixos do payload (payload.config_fields ou payload.static_fields no YAML)
+        payload = dict(self.payload_cfg.get("config_fields",
+                       self.payload_cfg.get("static_fields", {})))
 
         # Campos dinâmicos (request.dynamic_fields no YAML)
         dynamic = self.request_cfg.get("dynamic_fields", [])
@@ -316,25 +317,87 @@ class TargetAdapter:
 
         logger.info(f"[Turn {self.turn_count}] Enviando: {message[:80]}...")
 
+        response_format = self.response_cfg.get("format", "sse")
+
         try:
-            with self._client.stream("POST", url, content=body, headers=headers) as resp:
+            if response_format == "json":
+                # ── JSON puro (não streaming) ──
+                resp = self._client.post(url, content=body, headers=headers)
                 if resp.status_code == 403:
                     return self._blocked(resp.status_code, message, "403 — bloqueio PX/Cloudflare")
                 if resp.status_code == 429:
                     return self._blocked(resp.status_code, message, "429 — rate limit")
                 resp.raise_for_status()
 
-                self._last_truncation = {}
-                text, events = self._parse_sse(resp)
-                truncation = getattr(self, "_last_truncation", {})
+                # Extrair texto do JSON usando text_field (suporta nested: "message.content")
+                text_field = self.response_cfg.get("text_field", "")
+                try:
+                    data = resp.json()
+                    text = data
+                    for key in text_field.split("."):
+                        if key and isinstance(text, dict):
+                            text = text.get(key, "")
+                    if not isinstance(text, str):
+                        text = json.dumps(text, ensure_ascii=False)
+                except Exception as e:
+                    text = resp.text
+                    logger.warning(f"Falha ao parsear JSON: {e} — usando texto raw")
 
-                # Renovar token se vier no header de resposta
-                token_header = self.token_cfg.get("response_header", "")
-                if token_header:
-                    new_tok = resp.headers.get(token_header) or resp.headers.get(token_header.lower())
-                    if new_tok and new_tok != self._session_token:
-                        self._session_token = new_tok
-                        logger.debug(f"{self._token_name} renovado via response header")
+                # Extrair metadata fields
+                metadata = {}
+                for field in self.response_cfg.get("metadata_fields", []):
+                    try:
+                        val = data
+                        for key in field.split("."):
+                            if key and isinstance(val, dict):
+                                val = val.get(key)
+                        if val is not None:
+                            metadata[field] = val
+                    except Exception:
+                        pass
+
+                # Atualizar conversation_id se presente
+                conv_id = metadata.get("conversation_id") or (data.get("conversation_id") if isinstance(data, dict) else None)
+                if conv_id and self._token_name == "conversation_id":
+                    self._session_token = conv_id
+                    logger.debug(f"conversation_id atualizado: {conv_id[:20]}...")
+
+                logger.info(f"[Turn {self.turn_count}] Resposta: {text[:120]}...")
+
+                return {
+                    "success": True,
+                    "extracted_text": text,
+                    "raw_response": resp.text,
+                    "response_json": data if isinstance(data, dict) else {},
+                    "metadata": metadata,
+                    "status_code": resp.status_code,
+                    "turn": self.turn_count,
+                    "message_sent": message,
+                    "sse_events": [],
+                    "truncated": False,
+                    "truncation_info": None,
+                }
+
+            else:
+                # ── SSE streaming (formato padrão) ──
+                with self._client.stream("POST", url, content=body, headers=headers) as resp:
+                    if resp.status_code == 403:
+                        return self._blocked(resp.status_code, message, "403 — bloqueio PX/Cloudflare")
+                    if resp.status_code == 429:
+                        return self._blocked(resp.status_code, message, "429 — rate limit")
+                    resp.raise_for_status()
+
+                    self._last_truncation = {}
+                    text, events = self._parse_sse(resp)
+                    truncation = getattr(self, "_last_truncation", {})
+
+                    # Renovar token se vier no header de resposta
+                    token_header = self.token_cfg.get("response_header", "")
+                    if token_header:
+                        new_tok = resp.headers.get(token_header) or resp.headers.get(token_header.lower())
+                        if new_tok and new_tok != self._session_token:
+                            self._session_token = new_tok
+                            logger.debug(f"{self._token_name} renovado via response header")
 
             if truncation:
                 logger.warning(

@@ -127,6 +127,24 @@ class LLMEvaluator:
                 self._model  = cfg["gemini"]["model"]
                 self._new_sdk = False
 
+        elif self.provider == "ollama":
+            import requests as req
+            ollama_cfg = cfg.get("ollama", {})
+            self._ollama_url = ollama_cfg.get("url", "http://localhost:11434")
+            self._model = ollama_cfg.get("model", "redteam-ai")
+            self._ollama_timeout = ollama_cfg.get("timeout", 300)
+            # Verificar modelo
+            try:
+                resp = req.get(f"{self._ollama_url}/api/tags", timeout=10)
+                if resp.status_code == 200:
+                    models = [m.get("name", "") for m in resp.json().get("models", [])]
+                    if not any(self._model == m or self._model == m.split(":")[0] for m in models):
+                        logger.warning(
+                            f"LLMEvaluator: modelo '{self._model}' não encontrado no Ollama"
+                        )
+            except Exception:
+                pass
+
     def evaluate(self, technique: str, payload: str, response: str) -> dict:
         """
         Avalia se uma resposta indica exploração bem-sucedida.
@@ -155,6 +173,14 @@ class LLMEvaluator:
 
         try:
             raw = self._call_llm(prompt)
+            logger.debug(f"LLMEvaluator raw response ({len(raw) if raw else 0} chars): {(raw or '')[:200]}")
+            if not raw or not raw.strip():
+                logger.warning("LLMEvaluator: modelo retornou resposta vazia")
+                return {
+                    "vulnerable": False, "confidence": 0,
+                    "finding_type": "error", "reason": "empty LLM response",
+                    "leaked_content": None
+                }
             result = self._parse_json(raw)
             self.eval_history.append({
                 "technique": technique,
@@ -173,7 +199,7 @@ class LLMEvaluator:
             return result
 
         except Exception as e:
-            logger.error(f"LLMEvaluator error: {e}")
+            logger.error(f"LLMEvaluator error: {e}", exc_info=True)
             return {
                 "vulnerable": False, "confidence": 0,
                 "finding_type": "error", "reason": str(e),
@@ -227,13 +253,55 @@ class LLMEvaluator:
             else:
                 return self._client.generate_content(prompt).text
 
+        elif self.provider == "ollama":
+            import requests as req
+            payload = {
+                "model": self._model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "think": False,
+                "options": {"num_predict": 512, "temperature": 0.3},
+            }
+            resp = req.post(
+                f"{self._ollama_url}/api/chat",
+                json=payload,
+                timeout=self._ollama_timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = data.get("message", {}).get("content", "").strip()
+            if not text:
+                # Fallback: tentar campo thinking
+                text = data.get("message", {}).get("thinking", "").strip()
+            return text
+
     def _parse_json(self, raw: str) -> dict:
+        if raw is None:
+            raise ValueError("LLM returned None")
         cleaned = raw.strip()
+
+        # Remover blocos <think>...</think> (modelos qwen3/abliterated)
+        if "<think>" in cleaned:
+            import re
+            cleaned = re.sub(r"<think>[\s\S]*?</think>", "", cleaned).strip()
+
+        # Remover markdown fences
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")[1:]
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
             cleaned = "\n".join(lines)
+
+        # Tentar extrair JSON de dentro de texto livre
+        if not cleaned.startswith("{"):
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                cleaned = cleaned[start:end + 1]
+
+        if not cleaned:
+            raise ValueError(f"Empty response after cleanup. Original ({len(raw)} chars): {raw[:200]}")
+
         return json.loads(cleaned)
 
     def summary(self) -> dict:

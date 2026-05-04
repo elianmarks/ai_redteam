@@ -233,7 +233,7 @@ class AttackerService:
 
         self.objectives    = target_cfg["attack"]["objectives"]
         self.seed_prompts  = target_cfg["attack"].get("seed_prompts", [])
-        self.provider: Literal["claude", "gemini"] = self.config["default_attacker"]
+        self.provider: Literal["claude", "gemini", "ollama"] = self.config["default_attacker"]
 
         # Log de comunicação com o LLM auxiliar — inicializado em set_session_id()
         self.attacker_log_file: Path | None = None
@@ -323,6 +323,49 @@ class AttackerService:
                 self.max_tokens = self.config["gemini"]["max_tokens"]
                 self._gemini_new_sdk = False
                 logger.info(f"Attacker: Gemini legacy SDK ({self.model})")
+
+        elif self.provider == "ollama":
+            import requests as req
+            ollama_cfg = self.config.get("ollama", {})
+            self.ollama_url = ollama_cfg.get("url", "http://localhost:11434")
+            self.model = ollama_cfg.get("model", "redteam-ai")
+            self.max_tokens = ollama_cfg.get("max_tokens", 4096)
+            self._ollama_timeout = ollama_cfg.get("timeout", 300)
+            # Verificar conexão
+            try:
+                resp = req.get(self.ollama_url, timeout=5)
+                if resp.status_code != 200:
+                    logger.warning(f"Ollama respondeu com status {resp.status_code}")
+            except Exception as e:
+                logger.error(f"Ollama não acessível em {self.ollama_url}: {e}")
+                logger.error("Execute: ollama serve")
+                raise ConnectionError(f"Ollama não acessível: {e}")
+
+            # Verificar se o modelo existe
+            try:
+                resp = req.get(f"{self.ollama_url}/api/tags", timeout=10)
+                if resp.status_code == 200:
+                    models = [m.get("name", "") for m in resp.json().get("models", [])]
+                    # Verificar match exato ou parcial (ollama usa name:tag)
+                    model_found = any(
+                        self.model == m or self.model == m.split(":")[0]
+                        for m in models
+                    )
+                    if model_found:
+                        logger.info(f"Attacker: Ollama ({self.model}) @ {self.ollama_url}")
+                    else:
+                        available = ", ".join(m.split(":")[0] for m in models[:10])
+                        logger.error(
+                            f"Modelo '{self.model}' não encontrado no Ollama. "
+                            f"Modelos disponíveis: [{available}]. "
+                            f"Crie com: python tools/create_local_model.py --model-name {self.model}"
+                        )
+                        raise ValueError(f"Modelo '{self.model}' não encontrado no Ollama")
+            except (req.RequestException, ValueError) as e:
+                if "não encontrado" in str(e):
+                    raise
+                logger.warning(f"Não foi possível verificar modelos do Ollama: {e}")
+
         else:
             raise ValueError(f"Provider desconhecido: {self.provider}")
 
@@ -647,6 +690,10 @@ class AttackerService:
         try:
             raw = self._call_llm(prompt_content)
             self._write_attacker_log(turn, prompt_content, raw)
+            logger.debug(f"Attacker raw response ({len(raw) if raw else 0} chars): {(raw or '')[:300]}")
+            if not raw or not raw.strip():
+                logger.warning("Attacker LLM retornou resposta vazia — usando fallback")
+                return self._fallback()
             decision = self._parse_json(raw)
 
             # Verificar repetição ANTES de _update_memory (que adiciona ao prompts_sent)
@@ -703,7 +750,7 @@ class AttackerService:
                 except Exception as e2:
                     logger.error(f"Retry também falhou: {e2}")
             else:
-                logger.error(f"Erro no attacker LLM: {e}")
+                logger.error(f"Erro no attacker LLM: {e}", exc_info=True)
             return self._fallback()
 
     def _force_variation(self, original_prompt: str, repeated: str) -> dict:
@@ -819,14 +866,92 @@ class AttackerService:
                 resp = self._chat_session.send_message(prompt)
                 return resp.text
 
+        elif self.provider == "ollama":
+            import requests as req
+
+            # Ollama: manter histórico de mensagens (mesmo approach que Claude)
+            if self._chat_session is None:
+                self._chat_session = []
+
+            self._chat_session.append({"role": "user", "content": prompt})
+
+            payload = {
+                "model": self.model,
+                "messages": self._chat_session,
+                "stream": False,
+                "think": False,              # Desabilitar <think> blocks (nível raiz)
+                "options": {
+                    "num_predict": self.max_tokens,
+                    "temperature": 0.8,
+                    "top_p": 0.9,
+                },
+            }
+
+            try:
+                resp = req.post(
+                    f"{self.ollama_url}/api/chat",
+                    json=payload,
+                    timeout=self._ollama_timeout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                logger.debug(f"Ollama raw keys: {list(data.keys())}")
+
+                # Extrair texto — tentar message.content, depois thinking como fallback
+                assistant_text = data.get("message", {}).get("content", "").strip()
+
+                # Se content veio vazio, pode estar no campo thinking
+                if not assistant_text:
+                    thinking = data.get("message", {}).get("thinking", "")
+                    if thinking:
+                        logger.debug(f"Ollama: content vazio, usando thinking ({len(thinking)} chars)")
+                        assistant_text = thinking.strip()
+
+                # Se ainda vazio, logar o response completo para debug
+                if not assistant_text:
+                    logger.warning(f"Ollama response vazia. Keys: {list(data.keys())}. "
+                                   f"message keys: {list(data.get('message', {}).keys())}. "
+                                   f"Raw (200ch): {str(data)[:200]}")
+                    if self._chat_session:
+                        self._chat_session.pop()
+                    raise ValueError("Ollama returned empty response")
+            except Exception:
+                if self._chat_session:
+                    self._chat_session.pop()  # rollback
+                raise
+
+            self._chat_session.append({"role": "assistant", "content": assistant_text})
+
+            # Limitar histórico
+            if len(self._chat_session) > 40:
+                self._chat_session = self._chat_session[:2] + self._chat_session[-38:]
+
+            return assistant_text
+
     def _parse_json(self, raw: str) -> dict:
         cleaned = raw.strip()
+
+        # Remover blocos <think>...</think> (modelos qwen3/abliterated)
+        if "<think>" in cleaned:
+            import re
+            cleaned = re.sub(r"<think>[\s\S]*?</think>", "", cleaned).strip()
+
+        # Remover markdown fences
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
             inner = lines[1:]
             if inner and inner[-1].strip() == "```":
                 inner = inner[:-1]
             cleaned = "\n".join(inner)
+
+        # Tentar extrair JSON de dentro de texto livre
+        if not cleaned.startswith("{"):
+            # Procurar primeiro { e último }
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                cleaned = cleaned[start:end + 1]
+
         return json.loads(cleaned)
 
     # ------------------------------------------------------------------

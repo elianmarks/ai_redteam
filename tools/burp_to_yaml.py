@@ -894,12 +894,12 @@ def main():
                         ))
     parser.add_argument("--token-name", default=None,
                         help=(
-                            "Nome do token de sessão (ex: session_tokn, chat_sid). "
+                            "Nome do token de sessão (ex: session_token, chat_sid, my_session_id). "
                             "Padrão: session_token"
                         ))
     parser.add_argument("--token-header", default=None,
                         help=(
-                            "Header HTTP de resposta que contém o token renovado (ex: X-Session-I). "
+                            "Header HTTP de resposta que contém o token renovado (ex: X-Session-Id, X-Chat-Token). "
                             "Se não informado, assume que o token não é renovado via header."
                         ))
 

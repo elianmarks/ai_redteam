@@ -5,6 +5,7 @@
 # Target configurations (contain sensitive intel, credentials, cookies)
 # Template is included; real targets are not
 config/targets/*.yaml
+cookies/
 !config/targets/template_target.yaml
 
 # Session results and reports (may contain leaked data)

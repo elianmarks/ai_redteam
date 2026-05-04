@@ -96,6 +96,7 @@ class SessionMemory:
         self._setup_client(cfg)
 
     def _setup_client(self, cfg: dict):
+        self._orch_config = cfg  # guardar para uso no _call_llm (ollama)
         if self.provider == "claude":
             import anthropic
             key = os.environ.get(cfg["claude"]["api_key_env"])
@@ -116,6 +117,10 @@ class SessionMemory:
                 self._model = cfg["gemini"]["model"]
                 self._new_sdk = False
             self._max_tokens = 2048
+        elif self.provider == "ollama":
+            ollama_cfg = cfg.get("ollama", {})
+            self._model = ollama_cfg.get("model", "redteam-ai")
+            self._max_tokens = ollama_cfg.get("max_tokens", 4096)
 
     def _call_llm(self, prompt: str) -> str:
         if self.provider == "claude":
@@ -134,14 +139,51 @@ class SessionMemory:
                 return resp.text
             else:
                 return self._client_old.generate_content(prompt).text
+        elif self.provider == "ollama":
+            import requests as req
+            ollama_cfg = self._orch_config.get("ollama", {})
+            url = ollama_cfg.get("url", "http://localhost:11434")
+            timeout = ollama_cfg.get("timeout", 300)
+            payload = {
+                "model": self._model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "think": False,
+                "options": {"num_predict": self._max_tokens, "temperature": 0.3},
+            }
+            resp = req.post(f"{url}/api/chat", json=payload, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            text = data.get("message", {}).get("content", "").strip()
+            if not text:
+                text = data.get("message", {}).get("thinking", "").strip()
+            return text
+        else:
+            raise ValueError(f"Provider desconhecido: {self.provider}")
 
     def _parse_json(self, raw: str) -> dict:
+        if raw is None:
+            raise ValueError("LLM returned None — provider may not be configured")
         cleaned = raw.strip()
+
+        # Remover blocos <think>...</think>
+        if "<think>" in cleaned:
+            import re
+            cleaned = re.sub(r"<think>[\s\S]*?</think>", "", cleaned).strip()
+
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")[1:]
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
             cleaned = "\n".join(lines)
+
+        # Extrair JSON de texto livre
+        if not cleaned.startswith("{"):
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                cleaned = cleaned[start:end + 1]
+
         return json.loads(cleaned)
 
     # ------------------------------------------------------------------
@@ -227,7 +269,7 @@ class SessionMemory:
             )
             return intel
         except Exception as e:
-            logger.error(f"Erro ao analisar sessões anteriores: {e}")
+            logger.error(f"Erro ao analisar sessões anteriores: {e}", exc_info=True)
             return {}
 
     # ------------------------------------------------------------------

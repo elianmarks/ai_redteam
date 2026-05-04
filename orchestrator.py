@@ -51,8 +51,18 @@ from services.target_adapter import TargetAdapter
 os.makedirs("logs", exist_ok=True)
 os.makedirs("results", exist_ok=True)
 
+def _get_log_level():
+    """Lê o nível de log do orchestrator.yaml."""
+    try:
+        with open("config/orchestrator.yaml") as f:
+            cfg = yaml.safe_load(f)
+        level_str = cfg.get("logging", {}).get("level", "INFO").upper()
+        return getattr(logging, level_str, logging.INFO)
+    except Exception:
+        return logging.INFO
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=_get_log_level(),
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
@@ -929,9 +939,16 @@ def main():
             print(f"    {cat:<10} {count} payloads")
         return
 
-    if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
-        logger.error("Defina ANTHROPIC_API_KEY ou GEMINI_API_KEY")
-        sys.exit(1)
+    # Verificar API keys (Ollama não precisa)
+    orch_cfg_path = "config/orchestrator.yaml"
+    with open(orch_cfg_path) as f:
+        _orch_check = yaml.safe_load(f).get("orchestrator", {})
+    _provider = _orch_check.get("default_attacker", "gemini")
+
+    if _provider != "ollama":
+        if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
+            logger.error("Defina ANTHROPIC_API_KEY ou GEMINI_API_KEY (ou use provider 'ollama')")
+            sys.exit(1)
 
     # Resolver arquivo de configuração do alvo
     # Usa variável local para não conflitar com o global TARGET_CONFIG
